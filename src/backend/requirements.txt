@@ -1,0 +1,4 @@
+# Flask, MySQL Connector
+flask
+mysql-connector-python
+flask-cors

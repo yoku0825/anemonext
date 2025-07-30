@@ -1,0 +1,353 @@
+#!/usr/bin/perl
+
+########################################################################
+# Copyright (C) 2016, 2025  yoku0825
+# Copyright (C) 2018,       yokogawa-k
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+########################################################################
+
+use constant VERSION => "0.0.1";
+use strict;
+use warnings;
+use utf8;
+
+use FindBin qw/$Bin/;
+use Time::Piece;
+use DBI;
+use Parallel::ForkManager;
+use Socket;
+use Getopt::Long qw/:config posix_default bundling no_ignore_case gnu_compat/;
+
+use constant TIME_FORMAT => ["%Y/%m/%d %H:%M:%S",
+                             "%Y/%m/%d %H:%M",
+                             "%Y/%m/%d",
+                             "%Y-%m-%d %H:%M:%S",
+                             "%Y-%m-%d %H:%M",
+                             "%Y-%m-%d",
+                             "%Y%m%d%H%M%S",
+                             "%Y%m%d%H%M",
+                             "%Y%m%d"];
+
+our $hostname= $ENV{HOSTNAME} ? $ENV{HOSTNAME} : "localhost";
+our $ipaddr  = inet_ntoa(inet_aton($hostname));
+my $opt= {parallel  => int(&count_cpu_thread * 1.5),
+          since     => Time::Piece::localtime->add_months(-1)->strftime("%Y%m%d"),
+          until     => "9999/12/31",
+          type      => "slowlog",
+          report    => 15,
+          cell      => 5,
+          help      => 0,
+          docker    => 1,
+          local     => 0,
+          pt_docker => 0,
+         };
+GetOptions($opt, qw/socket=s host=s port=i user=s password=s
+                    parallel=i since=s until=s type=s report=i cell=i
+                    help usage no-docker local use-docker-for-pt
+                    pt-query-digest=s /) or die;
+usage() if $opt->{help} || $opt->{usage};
+usage("--cell should not be 0") unless $opt->{cell};
+my $since= parse_time($opt->{since}, &TIME_FORMAT);
+usage("Can't parse --since") unless $since;
+my $until= parse_time($opt->{until}, &TIME_FORMAT);
+usage("Can't parse --until") unless $until;
+usage("'$opt->{type}' is not a valid input type") unless grep {$_ eq $opt->{type}} qw(slowlog binlog tcpdump);
+$opt->{docker}= 0 if $opt->{"no-docker"};
+$opt->{pt_docker}= 1 if $opt->{"use-docker-for-pt"};
+$opt->{"pt-query-digest"} //= "/usr/bin/pt-query-digest";
+
+our $pt_qd;
+if ($opt->{pt_docker})
+{
+  system("sudo docker pull percona/percona-toolkit:3.7 > /dev/null");
+  $pt_qd= "sudo docker run --rm -i percona/percona-toolkit:3.7 pt-query-digest";
+}
+else
+{
+  usage(sprintf("%s isn't executable.\n" .
+                "Use --use-docker-for-pt or --pt-query-digest=/path/to/pt-query-digest for using pt-query-digest.",
+                $opt->{"pt-query-digest"})) unless -x $opt->{"pt-query-digest"};
+  $pt_qd= $opt->{"pt-query-digest"};
+}
+
+my @files= @ARGV;
+
+usage("Slow log file was not specified.") unless @files;
+foreach my $file (@files)
+{
+  usage("Slow log $file can't read.") unless -r $file;
+}
+
+### Starting docker container.
+if ($opt->{docker})
+{
+  my $repository;
+  if ($opt->{local})
+  {
+    $repository= "anemonext";
+    system("cd src ; sudo docker build -t anemonext . ; cd -");
+  }
+  else
+  {
+    $repository= "yoku0825/anemonext";
+    system("sudo docker pull $repository > /dev/null");
+  }
+
+  my $container_id= `sudo docker run -d -p 3000:3000 -p 5000:5000 $repository`;
+  chomp($container_id);
+
+  my $container_ipaddr= `sudo docker inspect -f '{{.NetworkSettings.IPAddress}}' $container_id`;
+  chomp($container_ipaddr);
+
+  ### wait container's mysqld starts to run
+  my $max_retry= 10;
+  my $retry= 0;
+  while ()
+  {
+    eval
+    {
+      my $conn= DBI->connect("dbi:mysql:;host=$container_ipaddr", "anemonext", "",
+                             {RaiseError => 1, PrintError => 0});
+      $conn->do("SELECT CURRENT_USER()");
+    };
+
+    last unless $@;
+
+    if (++$retry > $max_retry)
+    {
+      die("Attempt to connect to container $container_id, " .
+          "but can't connect $retry times and giving up to run.\n" .
+          "Please check 'docker logs $container_id' and confirm container runs correctly or not.");
+    }
+    else
+    {
+      sleep 3;
+    }
+  }
+
+  $opt->{host}    = $container_ipaddr;
+  $opt->{user}    = "anemonext";
+  $opt->{password}= undef;
+  $opt->{port}    = undef;
+
+  printf("Docker container starts with %s.\n", $container_ipaddr);
+  printf("URL will be http://%s:3000\n", $ipaddr);
+}
+
+my $pt_dsn= "D=slow_query_log";
+$pt_dsn  .= sprintf(",h=%s", $opt->{host})     if $opt->{host};
+$pt_dsn  .= sprintf(",P=%d", $opt->{port})     if $opt->{port};
+$pt_dsn  .= sprintf(",u=%s", $opt->{user})     if $opt->{user};
+$pt_dsn  .= sprintf(",p=%s", $opt->{password}) if $opt->{password};
+
+my $cmd_format= q{| %s --type=%s --no-version-check --review %s --history %s --no-report --limit=0%% --filter='$event->{Bytes} = length($event->{arg}) and $event->{hostname}="%s" and ($event->{db} || "") !~ /^(information_schema|performance_schema|sys)$/i and (($event->{fingerprint} || "") !~ /\s`?(information_schema|performance_schema|sys)`?\./i)' > /dev/null};
+
+my $pm  = Parallel::ForkManager->new($opt->{parallel});
+
+foreach my $file (@files)
+{
+  my $in;
+
+  if ($opt->{type} eq "binlog")
+  {
+    ### decode by mysqlbinlog
+    open($in, "mysqlbinlog $file |");
+  }
+  else
+  {
+    ### open as slow-log.
+    open($in, "<", $file);
+  }
+
+  my $event  = 0;
+  my $timetmp= 0;
+  my $current_time;
+  my $previous_time;
+  my @buffer = ();
+  while (<$in>)
+  {
+    ### Slowlog or Binlog style.
+    if (/^# Time: (?<timestr>.+)$/ || /^#(?<timestr>[\d\s:]+) server id/)
+    {
+      if ($+{timestr} =~ /(?<year>\d{2})(?<month>\d{2})(?<day>\d{2})\s+
+                          (?<hour>\d{1,2}):(?<minute>\d{2}):(?<second>\d{2})/x)
+      {
+        ### 5.0, 5.1, 5.5, 5.6 style slow-log and binary-log.
+        # "# Time: %02d%02d%02d %2d:%02d:%02d\n",
+  
+        ### normalize without seconds.
+        $timetmp= sprintf("20%02d%02d%02d%02d%02d",
+                          $+{year}, $+{month}, $+{day},
+                          $+{hour}, $+{minute});
+  
+      }
+      elsif ($+{timestr} =~ /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T
+                             (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})\.
+                             (?<fraction>\d{6})(?<timezone>.*)/x)
+      {
+        ### 5.7 style.
+        # "# Time: %04d-%02d-%02dT%02d:%02d:%02d.%06lu%s",
+   
+        ### normalize without seconds.
+        $timetmp= sprintf("%04d%02d%02d%02d%02d",
+                          $+{year}, $+{month}, $+{day},
+                          $+{hour}, $+{minute});
+        
+        ### replace buffer's timestr.
+        $_= sprintf("# Time: %02d%02d%02d %2d:%02d:%02d\n",
+                    substr($+{year}, 2, 2), $+{month}, $+{day},
+                    $+{hour}, $+{minute}, $+{second});
+      }
+      else
+      {
+        ### Unknown format.
+        $timetmp= 0;
+      }
+  
+      $current_time= Time::Piece->strptime($timetmp, "%Y%m%d%H%M%S");
+  
+      if (!($previous_time) || ($current_time - $previous_time) >= ($opt->{cell} * 60))
+      {
+        $event= &send_pt_qd($current_time, $event, $file, @buffer);
+        $previous_time= $current_time;
+        @buffer= ();
+      }
+    }
+    ### tcpdump
+    elsif ($opt->{type} eq "tcpdump")
+    {
+      if (/^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})\s
+             (?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})\.(?<fraction>\d{6})\s
+             IP\s[0-9\.]+\s[<>]\s[0-9\.]+:\stcp\s[0-9]+$/x)
+      {
+        ### normalize without seconds.
+        $timetmp= sprintf("%04d%02d%02d%02d%02d",
+                          $+{year}, $+{month}, $+{day},
+                          $+{hour}, $+{minute});
+
+        $current_time= Time::Piece->strptime($timetmp, "%Y%m%d%H%M%S");
+
+        if (!($previous_time) || ($current_time - $previous_time) >= ($opt->{cell} * 60))
+        {
+          $event= &send_pt_qd($current_time, $event, $file, @buffer);
+          $previous_time= $current_time;
+          @buffer= ();
+        }
+      }
+    }
+    push(@buffer, $_);
+  }
+  
+  ### flush last block.
+  &send_pt_qd($current_time, $event, $file, @buffer) if @buffer;
+  
+  $pm->wait_all_children;
+} 
+
+
+exit 0;
+
+
+sub usage
+{
+  my ($msg)= @_;
+
+  print $msg, "\n" if $msg;
+  print << "EOF";
+$0 [--user=s] [--password=s] [--port=i] [--host=s] [--socket=s]
+   [--parallel=i] [--since=i] [--until=i] [--report=i] [--type=s] slowlog
+
+  $0 is split slowlog and process by pt-query-digest.
+
+  --socket=s   MySQL socket which pt-query-digest uses to connection.
+  --host=s     MySQL host which pt-query-digest uses to connection.
+  --port=i     MySQL port which pt-query-digest uses to connection.
+  --user=s     MySQL user which pt-query-digest uses to connection.
+  --password=s MySQL password which pt-query-digest uses to connection.
+  --parallel=i How many processes does script run concurrently (default: CPU threads * 1.5)
+  --since=i    Filter for processing slow-log, see also "Supported datetime styles".
+  --until=i    Filter for processing slow-log, see also "Supported datetime styles".
+  --type       The type of input to parse (default: slowlog). The permitted types are slowlog, binlog, tcpdump.
+  --report=i   Print message each processed events n times (default: 15)
+  --cell=i     How many minutes buffering and aggregating (default: 5[min])
+  --no-docker  Do not use docker image. Must specify --user, --password, --port and --host(or --socket).
+  --local      Using docker container but using local built(Do not use yoku0825/anemonext)
+  --use-docker-for-pt Using pt-query-digest via docker contaier (yoku0825/percona-toolkit)
+
+  Supported datetime styles are
+    "%Y/%m/%d %H:%M:%S" (ex. "2016/02/08 11:01:22")
+    "%Y/%m/%d %H:%M"    (ex. "2016/02/08 11:01")
+    "%Y/%m/%d"          (ex. "2016/02/08")
+    "%Y-%m-%d %H:%M:%S" (ex. "2016-02-08 11:01:22")
+    "%Y-%m-%d %H:%M"    (ex. "2016-02-08 11:01")
+    "%Y-%m-%d"          (ex. "2016-02-08")
+    "%Y%m%d%H%M%S"      (ex. "20160208110122")
+    "%Y%m%d%H%M"        (ex. "201602081101")
+    "%Y%m%d"            (ex. "20160208")
+EOF
+  exit 0;
+}
+
+
+sub parse_time
+{
+  my ($timestr, $candidate)= @_;
+  my $ret;
+
+  foreach (@$candidate)
+  {
+    eval
+    {
+      $ret= Time::Piece->strptime($timestr, $_);
+    };
+
+    return $ret unless $@;
+  }
+}
+
+
+sub send_pt_qd
+{
+  my ($current_time, $event, $file, @buffer)= @_;
+  return 0 unless ($since <= $current_time && $current_time <= $until);
+  printf("processing %s %s at %s.\n", $current_time->ymd, $current_time->hms, $file)
+    if ($opt->{report} && (++$event % $opt->{report}) == 0);
+
+  unless ($pm->start)
+  {
+    open(my $process, sprintf($cmd_format,
+                              $pt_qd,
+                              $opt->{type},
+                              $pt_dsn . ",t=global_query_review",
+                              $pt_dsn . ",t=global_query_review_history",
+                              $hostname));
+    print $process @buffer;
+    close($process);
+    $pm->finish;
+  }
+
+  return ++$event;
+}
+
+
+sub count_cpu_thread
+{
+  my $thread= `grep processor /proc/cpuinfo | tail -1 | awk '{print \$3}'`;
+  chomp($thread);
+
+  return $thread ? $thread : 1;
+}
+
