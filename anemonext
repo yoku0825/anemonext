@@ -27,6 +27,7 @@ use utf8;
 use FindBin qw/$Bin/;
 use Time::Piece;
 use DBI;
+use JSON qw{ from_json };
 use Parallel::ForkManager;
 use Socket;
 use Getopt::Long qw/:config posix_default bundling no_ignore_case gnu_compat/;
@@ -109,8 +110,10 @@ if ($opt->{docker})
   my $container_id= `sudo docker run -d -p 3000:3000 -p 5000:5000 $repository`;
   chomp($container_id);
 
-  my $container_ipaddr= `sudo docker inspect -f '{{.NetworkSettings.IPAddress}}' $container_id`;
-  chomp($container_ipaddr);
+  my $container_inspect= `sudo docker inspect $container_id`;
+  chomp($container_inspect);
+  my $json= from_json($container_inspect)->[0];
+  my $container_ipaddr= $json->{NetworkSettings}->{IPAddress} // $json->{NetworkSettings}->{Networks}->{bridge}->{IPAddress};
 
   ### wait container's mysqld starts to run
   my $max_retry= 10;
