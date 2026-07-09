@@ -104,8 +104,17 @@ function App() {
   useEffect(() => {
     fetch('http://localhost:5000/api/query_history')
       .then(res => res.json())
-      .then(setData);
-    fetchSummary(period, zoomRange).then(setSummary);
+      .then(setData)
+      .catch(err => {
+        console.error('failed to fetch query_history', err);
+        setData([]);
+      });
+    fetchSummary(period, zoomRange)
+      .then(setSummary)
+      .catch(err => {
+        console.error('failed to fetch query_summary', err);
+        setSummary([]);
+      });
   }, [period, zoomRange]);
 
   // ...existing code...
@@ -164,8 +173,21 @@ function App() {
     'rgba(63,81,181,1)',
     'rgba(0,188,212,1)',
   ];
+  // サマリーが空でも履歴から上位チェックサムを算出して描画できるようにする
+  const fallbackTopChecksums = (() => {
+    const entries = Object.entries(filteredGroups).map(([checksum, rows]) => {
+      const score = rows.reduce((acc, row) => acc + Number(row[metric] || 0), 0);
+      return { checksum, score };
+    });
+    return entries
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10)
+      .map(row => row.checksum);
+  })();
   // チェックサム→色の割り当て（トップ10のみ）
-  const topChecksums = summary.slice(0, 10).map(row => row.checksum);
+  const topChecksums = (summary.length > 0
+    ? summary.slice(0, 10).map(row => String(row.checksum))
+    : fallbackTopChecksums);
   const checksumColorMap = {};
   topChecksums.forEach((cs, idx) => {
     checksumColorMap[cs] = COLORS[idx % COLORS.length];
@@ -179,7 +201,7 @@ function App() {
 
   if (selectedChecksum) {
     // checksum指定時はそのchecksumのみ表示
-    const rows = filteredGroups[selectedChecksum] || [];
+    const rows = filteredGroups[String(selectedChecksum)] || [];
     // 色はトップ10に含まれていればその色、含まれていなければデフォルト
     const color = checksumColorMap[selectedChecksum] || COLORS[0];
     chartData = {
@@ -187,7 +209,7 @@ function App() {
       datasets: [
         {
           label: (() => {
-            const summaryRow = summary.find(row => row.checksum === selectedChecksum);
+            const summaryRow = summary.find(row => String(row.checksum) === String(selectedChecksum));
             if (summaryRow) {
               return `${(summaryRow.sample || '').replace(/\s+/g, ' ').slice(0, 20)}... [${selectedChecksum.slice(0,8)}]`;
             }
@@ -244,9 +266,9 @@ function App() {
     chartData = {
       labels: chartLabels,
       datasets: topChecksums.map((checksum, idx) => {
-        const rows = filteredGroups[checksum] || [];
+        const rows = filteredGroups[String(checksum)] || [];
         // 系列名: sample先頭20文字＋checksum短縮
-        const summaryRow = summary.find(row => row.checksum === checksum);
+        const summaryRow = summary.find(row => String(row.checksum) === String(checksum));
         let label = checksum;
         if (summaryRow) {
           label = `${(summaryRow.sample || '').replace(/\s+/g, ' ').slice(0, 20)}... [${checksum.slice(0,8)}]`;

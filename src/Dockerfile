@@ -5,12 +5,12 @@ FROM debian:bookworm
 # 必要なパッケージインストール
 RUN apt-get update && \
     apt-get install -y python3 python3-pip python3-venv nodejs npm wget lsb-release gnupg && \
-    wget https://dev.mysql.com/get/mysql-apt-config_0.8.34-1_all.deb && \
-    DEBIAN_FRONTEND=noninteractive dpkg -i mysql-apt-config_0.8.34-1_all.deb && \
+    wget https://dev.mysql.com/get/mysql-apt-config_0.8.39-1_all.deb && \
+    DEBIAN_FRONTEND=noninteractive dpkg -i mysql-apt-config_0.8.39-1_all.deb && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y mysql-server && \
     rm -rf /var/lib/apt/lists/* && \
-    rm mysql-apt-config_0.8.34-1_all.deb
+    rm mysql-apt-config_0.8.39-1_all.deb
 
 # 作業ディレクトリ
 WORKDIR /app

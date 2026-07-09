@@ -12,7 +12,7 @@ mysql -u root < /docker-entrypoint-initdb.d/init.sql
 
 # Flask API起動
 cd /app/backend
-python app.py &
+/venv/bin/python app.py &
 
 # Reactフロントエンド（静的ファイル）を公開
 cd /app/frontend
