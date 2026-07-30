@@ -28,7 +28,7 @@ $ ./anemonext path_to_slow_log
 
 * なのでanemonextの中でスローログを小刻みに処理させ、(ts_min, ts_max)が綺麗に分かれるようにpt-query-digestを呼び出してMySQLに保存させています。
 
-![](https://raw.githubusercontent.com/yoku0825/anemoeater/master/image/anemoeater.png)
+<img width="1619" height="887" alt="image" src="https://github.com/user-attachments/assets/3c068a28-89bf-4fb7-bc50-059067d10e81" />
 
 * 見たくなったら起動、見終わったらコンテナごと破棄することを想定しているためDockerを使っています。
 
