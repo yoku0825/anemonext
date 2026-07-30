@@ -31,6 +31,33 @@ const METRICS = [
   { value: 'Rows_examined_sum', label: 'Rows_examined_sum' },
 ];
 
+function parseDbDateTime(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  if (typeof value === 'string') {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/);
+    if (m) {
+      return new Date(
+        Number(m[1]),
+        Number(m[2]) - 1,
+        Number(m[3]),
+        Number(m[4]),
+        Number(m[5]),
+        Number(m[6]),
+      );
+    }
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatLocalDateTime(value) {
+  const date = parseDbDateTime(value);
+  if (!date) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 function getPeriodMs(period) {
   switch (period) {
     case '15min': return 15 * 60 * 1000;
@@ -93,8 +120,12 @@ function App() {
     const params = new URLSearchParams();
     if (period && period !== 'all') params.set('period', period);
     if (zoomRange && zoomRange.min && zoomRange.max) {
-      params.set('zoomMin', zoomRange.min);
-      params.set('zoomMax', zoomRange.max);
+      const zoomMin = formatLocalDateTime(zoomRange.min);
+      const zoomMax = formatLocalDateTime(zoomRange.max);
+      if (zoomMin && zoomMax) {
+        params.set('zoomMin', zoomMin);
+        params.set('zoomMax', zoomMax);
+      }
     }
     return fetch(`http://localhost:5000/api/query_summary?${params.toString()}`)
       .then(res => res.json());
@@ -147,13 +178,22 @@ function App() {
   Object.entries(checksumGroups).forEach(([checksum, rows]) => {
     let filtered = rows;
     if (period !== 'all' && rows.length > 0) {
-      const maxDate = new Date(rows[rows.length - 1].ts_min);
+      const maxDate = parseDbDateTime(rows[rows.length - 1].ts_min);
+      if (!maxDate) {
+        filteredGroups[checksum] = filtered;
+        return;
+      }
       const minDate = new Date(maxDate.getTime() - getPeriodMs(period));
-      filtered = rows.filter(row => new Date(row.ts_min) >= minDate);
+      filtered = rows.filter(row => {
+        const rowDate = parseDbDateTime(row.ts_min);
+        return rowDate && rowDate >= minDate;
+      });
     }
     if (zoomRange && filtered.length > 0) {
       filtered = filtered.filter(row => {
-        const t = new Date(row.ts_min).getTime();
+        const rowDate = parseDbDateTime(row.ts_min);
+        if (!rowDate) return false;
+        const t = rowDate.getTime();
         return t >= zoomRange.min && t <= zoomRange.max;
       });
     }
@@ -205,7 +245,7 @@ function App() {
     // 色はトップ10に含まれていればその色、含まれていなければデフォルト
     const color = checksumColorMap[selectedChecksum] || COLORS[0];
     chartData = {
-      labels: rows.map(row => new Date(row.ts_min)),
+      labels: rows.map(row => parseDbDateTime(row.ts_min)).filter(Boolean),
       datasets: [
         {
           label: (() => {
@@ -222,9 +262,11 @@ function App() {
       ],
     };
     if (rows.length > 0) {
-      const min = new Date(rows[0].ts_min);
-      const max = new Date(rows[rows.length - 1].ts_min);
-      periodText = `${min.toLocaleString()} ～ ${max.toLocaleString()}`;
+      const min = parseDbDateTime(rows[0].ts_min);
+      const max = parseDbDateTime(rows[rows.length - 1].ts_min);
+      if (min && max) {
+        periodText = `${min.toLocaleString()} ～ ${max.toLocaleString()}`;
+      }
     }
   } else if (!showByChecksum) {
     // 合算グラフ
@@ -238,7 +280,7 @@ function App() {
     });
     const sortedTs = Object.keys(tsMap).sort();
     chartData = {
-      labels: sortedTs.map(ts => new Date(ts)),
+      labels: sortedTs.map(ts => parseDbDateTime(ts)).filter(Boolean),
       datasets: [
         {
           label: '合算',
@@ -249,9 +291,11 @@ function App() {
       ],
     };
     if (sortedTs.length > 0) {
-      const min = new Date(sortedTs[0]);
-      const max = new Date(sortedTs[sortedTs.length - 1]);
-      periodText = `${min.toLocaleString()} ～ ${max.toLocaleString()}`;
+      const min = parseDbDateTime(sortedTs[0]);
+      const max = parseDbDateTime(sortedTs[sortedTs.length - 1]);
+      if (min && max) {
+        periodText = `${min.toLocaleString()} ～ ${max.toLocaleString()}`;
+      }
     }
   } else {
     // summaryトップ10のみ表示
@@ -259,7 +303,7 @@ function App() {
       // 最初の系列のラベルを使う
       const first = topChecksums.find(cs => filteredGroups[cs]?.length > 0);
       if (first) {
-        return filteredGroups[first].map(row => new Date(row.ts_min));
+        return filteredGroups[first].map(row => parseDbDateTime(row.ts_min)).filter(Boolean);
       }
       return [];
     })();

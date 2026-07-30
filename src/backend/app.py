@@ -1,6 +1,7 @@
 from flask import Flask, jsonify
 import mysql.connector
 from flask_cors import CORS
+import datetime
 
 
 app = Flask(__name__)
@@ -15,6 +16,19 @@ DB_CONFIG = {
     'port': 3306
 }
 
+
+def format_mysql_datetime(value):
+    if isinstance(value, datetime.datetime):
+        return value.strftime('%Y-%m-%d %H:%M:%S')
+    return value
+
+
+def serialize_history_rows(rows):
+    for row in rows:
+        row['ts_min'] = format_mysql_datetime(row.get('ts_min'))
+        row['ts_max'] = format_mysql_datetime(row.get('ts_max'))
+    return rows
+
 @app.route('/api/query_history')
 def get_query_history():
     checksum = request.args.get('checksum')
@@ -27,7 +41,7 @@ def get_query_history():
         params.append(checksum)
     sql += ' ORDER BY ts_min'
     cursor.execute(sql, params)
-    rows = cursor.fetchall()
+    rows = serialize_history_rows(cursor.fetchall())
     cursor.close()
     conn.close()
     return jsonify(rows)
@@ -50,8 +64,6 @@ def get_query_summary():
         cursor.close()
         conn.close()
         if max_ts:
-            import datetime
-            import re
             # ts_minが文字列の場合のパース
             if isinstance(max_ts, str):
                 # 例: '2025-07-28 12:34:56'
@@ -76,15 +88,25 @@ def get_query_summary():
                 where.append('ts_min >= %s')
                 params.append(min_ts.strftime('%Y-%m-%d %H:%M:%S'))
     if zoom_min and zoom_max:
-        # zoom_min, zoom_maxはJSのgetTime()で得たUNIXミリ秒なので、変換
+        zoom_min_dt = None
+        zoom_max_dt = None
+        # 文字列日時（YYYY-MM-DD HH:MM:SS）を優先して解釈
         try:
-            import datetime
-            zoom_min_dt = datetime.datetime.fromtimestamp(float(zoom_min)/1000)
-            zoom_max_dt = datetime.datetime.fromtimestamp(float(zoom_max)/1000)
+            zoom_min_dt = datetime.datetime.strptime(zoom_min, '%Y-%m-%d %H:%M:%S')
+            zoom_max_dt = datetime.datetime.strptime(zoom_max, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            # 互換のためUNIXミリ秒も許容
+            try:
+                zoom_min_dt = datetime.datetime.fromtimestamp(float(zoom_min) / 1000)
+                zoom_max_dt = datetime.datetime.fromtimestamp(float(zoom_max) / 1000)
+            except (TypeError, ValueError, OSError) as exc:
+                app.logger.warning('Invalid zoom range: %s - %s (%s)', zoom_min, zoom_max, exc)
+        if zoom_min_dt and zoom_max_dt:
             where.append('ts_min BETWEEN %s AND %s')
-            params.extend([zoom_min_dt.strftime('%Y-%m-%d %H:%M:%S'), zoom_max_dt.strftime('%Y-%m-%d %H:%M:%S')])
-        except Exception:
-            pass
+            params.extend([
+                zoom_min_dt.strftime('%Y-%m-%d %H:%M:%S'),
+                zoom_max_dt.strftime('%Y-%m-%d %H:%M:%S'),
+            ])
     checksum = request.args.get('checksum')
     if checksum:
         where.append('checksum = %s')
