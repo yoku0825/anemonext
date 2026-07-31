@@ -24,9 +24,10 @@ RUN python3 -m venv /venv && \
 ENV PATH="/venv/bin:$PATH"
 
 # Reactフロントエンド
-COPY frontend/ frontend/
 WORKDIR /app/frontend
-RUN npm install react react-dom chart.js react-chartjs-2 chartjs-adapter-date-fns chartjs-plugin-zoom react-router-dom && npm install
+COPY frontend/package.json ./package.json
+RUN npm install
+COPY frontend/ ./
 RUN npm run build || true
 
 # MySQL初期化
