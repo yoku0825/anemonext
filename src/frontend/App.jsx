@@ -211,6 +211,15 @@ function App() {
     }
     filteredGroups[checksum] = filtered;
   });
+  const allFilteredDates = Object.values(filteredGroups)
+    .flatMap(rows => rows.map(row => parseDbDateTime(row.ts_min)))
+    .filter(Boolean);
+  const xAxisMin = allFilteredDates.length > 0
+    ? Math.min(...allFilteredDates.map(date => date.getTime()))
+    : undefined;
+  const xAxisMax = allFilteredDates.length > 0
+    ? Math.max(...allFilteredDates.map(date => date.getTime()))
+    : undefined;
 
   // 色リスト
   const COLORS = [
@@ -348,6 +357,8 @@ function App() {
     scales: {
       x: {
         type: 'time',
+        min: xAxisMin,
+        max: xAxisMax,
         time: {
           tooltipFormat: 'yyyy/MM/dd HH:mm:ss',
           displayFormats: {
