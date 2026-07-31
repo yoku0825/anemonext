@@ -30,6 +30,16 @@ const METRICS = [
   { value: 'Rows_sent_sum', label: 'Rows_sent_sum' },
   { value: 'Rows_examined_sum', label: 'Rows_examined_sum' },
 ];
+const SAMPLE_PREVIEW_LENGTH = 100;
+const SUMMARY_COLUMNS = [
+  { key: 'checksum', label: 'checksum', type: 'string' },
+  { key: 'sample', label: 'sample', type: 'string' },
+  { key: 'Query_time_sum', label: 'query_time_sum', type: 'number' },
+  { key: 'Query_time_max', label: 'query_time_max', type: 'number' },
+  { key: 'ts_cnt', label: 'ts_cnt', type: 'number' },
+  { key: 'Rows_sent_sum', label: 'rows_sent_sum', type: 'number' },
+  { key: 'Rows_examined_sum', label: 'rows_examined_sum', type: 'number' },
+];
 
 function parseDbDateTime(value) {
   if (!value) return null;
@@ -111,6 +121,8 @@ function App() {
   });
   const [summary, setSummary] = useState([]);
   const [showByChecksum, setShowByChecksum] = useState(true);
+  const [expandedSamples, setExpandedSamples] = useState({});
+  const [summarySort, setSummarySort] = useState({ key: 'Query_time_sum', direction: 'desc' });
   const chartRef = useRef();
   const navigate = useNavigate();
   const location = useLocation();
@@ -411,6 +423,33 @@ function App() {
     },
   };
 
+  const filteredSummary = summary.filter(row => !selectedChecksum || row.checksum === selectedChecksum);
+  const sortedSummary = [...filteredSummary].sort((a, b) => {
+    const column = SUMMARY_COLUMNS.find(col => col.key === summarySort.key);
+    if (!column) return 0;
+    const direction = summarySort.direction === 'asc' ? 1 : -1;
+    if (column.type === 'number') {
+      const av = Number(a[column.key] ?? 0);
+      const bv = Number(b[column.key] ?? 0);
+      if (av < bv) return -1 * direction;
+      if (av > bv) return 1 * direction;
+      return 0;
+    }
+    const av = String(a[column.key] ?? '');
+    const bv = String(b[column.key] ?? '');
+    return av.localeCompare(bv) * direction;
+  });
+  const displayedSummary = selectedChecksum ? sortedSummary : sortedSummary.slice(0, 10);
+
+  const toggleSummarySort = (key) => {
+    setSummarySort((prev) => {
+      if (prev.key === key) {
+        return { key, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
+      }
+      return { key, direction: 'desc' };
+    });
+  };
+
 
   const handleResetZoom = () => {
     setZoomRange(null);
@@ -471,34 +510,78 @@ function App() {
       <table style={{width: '100%', borderCollapse: 'collapse', marginTop: '10px', tableLayout: 'fixed'}}>
         <thead>
           <tr>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '80px'}}>checksum</th>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '320px'}}>sample</th>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>Query_time_sum</th>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>Query_time_max</th>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '80px'}}>ts_cnt</th>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>Rows_sent_sum</th>
-            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>Rows_examined_sum</th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '80px'}}>
+              <button type="button" onClick={() => toggleSummarySort('checksum')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                checksum{summarySort.key === 'checksum' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '320px'}}>
+              <button type="button" onClick={() => toggleSummarySort('sample')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                sample{summarySort.key === 'sample' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>
+              <button type="button" onClick={() => toggleSummarySort('Query_time_sum')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                query_time_sum{summarySort.key === 'Query_time_sum' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>
+              <button type="button" onClick={() => toggleSummarySort('Query_time_max')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                query_time_max{summarySort.key === 'Query_time_max' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '80px'}}>
+              <button type="button" onClick={() => toggleSummarySort('ts_cnt')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                ts_cnt{summarySort.key === 'ts_cnt' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>
+              <button type="button" onClick={() => toggleSummarySort('Rows_sent_sum')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                rows_sent_sum{summarySort.key === 'Rows_sent_sum' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>
+              <button type="button" onClick={() => toggleSummarySort('Rows_examined_sum')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                rows_examined_sum{summarySort.key === 'Rows_examined_sum' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
           </tr>
         </thead>
         <tbody>
-          {summary
-            .filter(row => !selectedChecksum || row.checksum === selectedChecksum)
-            .slice(0, selectedChecksum ? undefined : 10)
-            .map(row => (
-              <tr key={row.checksum}>
-                <td style={{border: '1px solid #ccc', padding: '4px'}}>
-                  <span style={{color: 'blue', textDecoration: 'underline', cursor: 'pointer'}} onClick={() => navigate(`/?checksum=${row.checksum}`)}>
-                    {row.checksum?.toString().slice(0,8)}
-                  </span>
-                </td>
-                <td style={{border: '1px solid #ccc', padding: '4px', wordBreak: 'break-all', whiteSpace: 'pre-wrap', maxWidth: '320px'}}>{row.sample}</td>
-                <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Query_time_sum ? Number(row.Query_time_sum).toFixed(3) : ''}</td>
-                <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Query_time_max ? Number(row.Query_time_max).toFixed(3) : ''}</td>
-                <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.ts_cnt}</td>
-                <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Rows_sent_sum}</td>
-                <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Rows_examined_sum}</td>
-              </tr>
-            ))}
+          {displayedSummary.map(row => {
+              const sampleText = row.sample || '';
+              const isLongSample = sampleText.length > SAMPLE_PREVIEW_LENGTH;
+              const isExpanded = Boolean(expandedSamples[row.checksum]);
+              const shownSample = isLongSample && !isExpanded
+                ? `${sampleText.slice(0, SAMPLE_PREVIEW_LENGTH)}...`
+                : sampleText;
+              return (
+                <tr key={row.checksum}>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>
+                    <span style={{color: 'blue', textDecoration: 'underline', cursor: 'pointer'}} onClick={() => navigate(`/?checksum=${row.checksum}`)}>
+                      {row.checksum?.toString().slice(0,8)}
+                    </span>
+                  </td>
+                  <td style={{border: '1px solid #ccc', padding: '4px', wordBreak: 'break-all', whiteSpace: 'pre-wrap', maxWidth: '320px'}}>
+                    <span>{shownSample}</span>
+                    {isLongSample && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedSamples(prev => ({ ...prev, [row.checksum]: !prev[row.checksum] }))}
+                        style={{marginLeft: '8px', border: 'none', background: 'none', color: '#1976d2', cursor: 'pointer', padding: 0}}
+                      >
+                        {isExpanded ? '折りたたむ' : '続きを読む'}
+                      </button>
+                    )}
+                  </td>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Query_time_sum ? Number(row.Query_time_sum).toFixed(3) : ''}</td>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Query_time_max ? Number(row.Query_time_max).toFixed(3) : ''}</td>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.ts_cnt}</td>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Rows_sent_sum}</td>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Rows_examined_sum}</td>
+                </tr>
+              );
+            })}
         </tbody>
       </table>
     </div>
