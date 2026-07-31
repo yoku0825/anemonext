@@ -362,6 +362,8 @@ function App() {
         },
       },
       y: {
+        beginAtZero: true,
+        min: 0,
         title: {
           display: true,
           text: metric,
