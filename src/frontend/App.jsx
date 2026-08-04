@@ -142,6 +142,7 @@ function App() {
   const [summary, setSummary] = useState([]);
   const [showByChecksum, setShowByChecksum] = useState(true);
   const [expandedSamples, setExpandedSamples] = useState({});
+  const [copiedSamples, setCopiedSamples] = useState({});
   const [hiddenChecksums, setHiddenChecksums] = useState({});
   const [summarySort, setSummarySort] = useState({ key: 'Query_time_sum', direction: 'desc' });
   const chartRef = useRef();
@@ -572,6 +573,25 @@ function App() {
     });
   };
 
+  const handleCopySample = (checksum, sampleText) => {
+    if (!sampleText) return;
+    navigator.clipboard.writeText(sampleText)
+      .then(() => {
+        const key = String(checksum);
+        setCopiedSamples((prev) => ({ ...prev, [key]: true }));
+        setTimeout(() => {
+          setCopiedSamples((prev) => {
+            const next = { ...prev };
+            delete next[key];
+            return next;
+          });
+        }, 1500);
+      })
+      .catch((err) => {
+        console.error('failed to copy sample', err);
+      });
+  };
+
 
   const handleResetZoom = () => {
     setZoomRange(null);
@@ -731,6 +751,13 @@ function App() {
                         {isExpanded ? '折りたたむ' : '続きを読む'}
                       </button>
                     )}
+                    <button
+                      type="button"
+                      onClick={() => handleCopySample(row.checksum, sampleText)}
+                      style={{marginLeft: '8px', border: 'none', background: 'none', color: '#1976d2', cursor: 'pointer', padding: 0}}
+                    >
+                      {copiedSamples[String(row.checksum)] ? 'コピー済み' : 'コピー'}
+                    </button>
                   </td>
                   <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Query_time_sum ? Number(row.Query_time_sum).toFixed(3) : ''}</td>
                   <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Query_time_max ? Number(row.Query_time_max).toFixed(3) : ''}</td>
