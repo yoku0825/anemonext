@@ -98,12 +98,12 @@ if ($opt->{docker})
   my $repository;
   if ($opt->{local})
   {
-    $repository= "anemonext";
-    system("cd src ; sudo docker build -t anemonext . ; cd -");
+    $repository= "anemonext:local";
+    system("cd src ; sudo docker build -t $repository . ; cd -");
   }
   else
   {
-    $repository= "yoku0825/anemonext";
+    $repository= "yoku0825/anemonext:latest";
     system("sudo docker pull $repository > /dev/null");
   }
 
