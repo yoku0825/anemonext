@@ -22,6 +22,13 @@ const PERIODS = [
   { value: '60days', label: '60日' },
   { value: 'all', label: '全期間' },
 ];
+const GRANULARITIES = [
+  { value: 'default', label: '既定' },
+  { value: '1h', label: '1時間' },
+  { value: '6h', label: '6時間' },
+  { value: '1d', label: '1日' },
+  { value: '1w', label: '1週間' },
+];
 
 const METRICS = [
   { value: 'Query_time_sum', label: 'Query_time_sum' },
@@ -86,20 +93,32 @@ function getPeriodMs(period) {
   }
 }
 
+function getGranularityMs(granularity) {
+  switch (granularity) {
+    case '1h': return 60 * 60 * 1000;
+    case '6h': return 6 * 60 * 60 * 1000;
+    case '1d': return 24 * 60 * 60 * 1000;
+    case '1w': return 7 * 24 * 60 * 60 * 1000;
+    default: return null;
+  }
+}
+
 function getQueryParams() {
   const params = new URLSearchParams(window.location.search);
   return {
     metric: params.get('metric') || 'Query_time_sum',
     period: params.get('period') || 'all',
+    granularity: params.get('granularity') || 'default',
     zoomMin: params.get('zoomMin'),
     zoomMax: params.get('zoomMax'),
   };
 }
 
-function setQueryParams({ metric, period, zoomMin, zoomMax }, replace = false) {
+function setQueryParams({ metric, period, granularity, zoomMin, zoomMax }, replace = false) {
   const params = new URLSearchParams();
   if (metric) params.set('metric', metric);
   if (period) params.set('period', period);
+  if (granularity) params.set('granularity', granularity);
   if (zoomMin) params.set('zoomMin', zoomMin);
   if (zoomMax) params.set('zoomMax', zoomMax);
   const url = `${window.location.pathname}?${params.toString()}`;
@@ -114,6 +133,7 @@ function App() {
   const [data, setData] = useState([]);
   const [metric, setMetric] = useState(getQueryParams().metric);
   const [period, setPeriod] = useState(getQueryParams().period);
+  const [granularity, setGranularity] = useState(getQueryParams().granularity);
   const [zoomRange, setZoomRange] = useState(() => {
     const { zoomMin, zoomMax } = getQueryParams();
     if (zoomMin && zoomMax) return { min: Number(zoomMin), max: Number(zoomMax) };
@@ -166,9 +186,10 @@ function App() {
   // popstateでURLから状態復元
   useEffect(() => {
     const onPopState = () => {
-      const { metric, period, zoomMin, zoomMax } = getQueryParams();
+      const { metric, period, granularity, zoomMin, zoomMax } = getQueryParams();
       setMetric(metric);
       setPeriod(period);
+      setGranularity(granularity);
       if (zoomMin && zoomMax) {
         setZoomRange({ min: Number(zoomMin), max: Number(zoomMax) });
       } else {
@@ -212,7 +233,38 @@ function App() {
     }
     filteredGroups[checksum] = filtered;
   });
-  const allFilteredDates = Object.values(filteredGroups)
+  const granularityMs = getGranularityMs(granularity);
+  const groupedForChart = (() => {
+    if (!granularityMs) return filteredGroups;
+    const grouped = {};
+    Object.entries(filteredGroups).forEach(([checksum, rows]) => {
+      const bucketMap = {};
+      rows.forEach((row) => {
+        const rowDate = parseDbDateTime(row.ts_min);
+        if (!rowDate) return;
+        const bucketStart = new Date(Math.floor(rowDate.getTime() / granularityMs) * granularityMs);
+        const key = formatLocalDateTime(bucketStart);
+        if (!bucketMap[key]) {
+          bucketMap[key] = {
+            ts_min: key,
+            Query_time_sum: 0,
+            Query_time_max: 0,
+            ts_cnt: 0,
+            Rows_sent_sum: 0,
+            Rows_examined_sum: 0,
+          };
+        }
+        bucketMap[key].Query_time_sum += Number(row.Query_time_sum || 0);
+        bucketMap[key].Query_time_max += Number(row.Query_time_max || 0);
+        bucketMap[key].ts_cnt += Number(row.ts_cnt || 0);
+        bucketMap[key].Rows_sent_sum += Number(row.Rows_sent_sum || 0);
+        bucketMap[key].Rows_examined_sum += Number(row.Rows_examined_sum || 0);
+      });
+      grouped[checksum] = Object.values(bucketMap).sort((a, b) => String(a.ts_min).localeCompare(String(b.ts_min)));
+    });
+    return grouped;
+  })();
+  const allFilteredDates = Object.values(groupedForChart)
     .flatMap(rows => rows.map(row => parseDbDateTime(row.ts_min)))
     .filter(Boolean);
   const xAxisMin = allFilteredDates.length > 0
@@ -237,7 +289,7 @@ function App() {
   ];
   // サマリーが空でも履歴から上位チェックサムを算出して描画できるようにする
   const fallbackTopChecksums = (() => {
-    const entries = Object.entries(filteredGroups).map(([checksum, rows]) => {
+    const entries = Object.entries(groupedForChart).map(([checksum, rows]) => {
       const score = rows.reduce((acc, row) => acc + Number(row[metric] || 0), 0);
       return { checksum, score };
     });
@@ -310,7 +362,7 @@ function App() {
 
   if (selectedChecksum) {
     // checksum指定時はそのchecksumのみ表示
-    const rows = filteredGroups[String(selectedChecksum)] || [];
+    const rows = groupedForChart[String(selectedChecksum)] || [];
     // 色はトップ10に含まれていればその色、含まれていなければデフォルト
     const color = checksumColorMap[selectedChecksum] || COLORS[0];
     chartData = {
@@ -342,7 +394,7 @@ function App() {
   } else if (!showByChecksum) {
     // 合算グラフ
     const tsMap = {};
-    Object.entries(filteredGroups).forEach(([checksum, rows]) => {
+    Object.entries(groupedForChart).forEach(([checksum, rows]) => {
       if (!isChecksumVisible(checksum)) return;
       rows.forEach(row => {
         const ts = row.ts_min;
@@ -375,14 +427,14 @@ function App() {
       // 最初の系列のラベルを使う
       const first = topChecksums.find(cs => filteredGroups[cs]?.length > 0);
       if (first) {
-        return filteredGroups[first].map(row => parseDbDateTime(row.ts_min)).filter(Boolean);
+        return groupedForChart[first].map(row => parseDbDateTime(row.ts_min)).filter(Boolean);
       }
       return [];
     })();
     chartData = {
       labels: chartLabels,
       datasets: topChecksums.map((checksum, idx) => {
-        const rows = filteredGroups[String(checksum)] || [];
+        const rows = groupedForChart[String(checksum)] || [];
         // 系列名: sample先頭20文字＋checksum短縮
         const summaryRow = summary.find(row => String(row.checksum) === String(checksum));
         let label = checksum;
@@ -462,7 +514,7 @@ function App() {
           onZoom: ({chart}) => {
             const xScale = chart.scales.x;
             setZoomRange({ min: xScale.min, max: xScale.max });
-            setQueryParams({ metric, period, zoomMin: xScale.min, zoomMax: xScale.max });
+            setQueryParams({ metric, period, granularity, zoomMin: xScale.min, zoomMax: xScale.max });
           },
         },
         limits: {
@@ -472,7 +524,7 @@ function App() {
         onZoomComplete: ({chart}) => {
           const xScale = chart.scales.x;
           setZoomRange({ min: xScale.min, max: xScale.max });
-          setQueryParams({ metric, period, zoomMin: xScale.min, zoomMax: xScale.max });
+          setQueryParams({ metric, period, granularity, zoomMin: xScale.min, zoomMax: xScale.max });
         },
       },
     },
@@ -523,7 +575,7 @@ function App() {
 
   const handleResetZoom = () => {
     setZoomRange(null);
-    setQueryParams({ metric, period });
+    setQueryParams({ metric, period, granularity });
     if (chartRef.current) {
       chartRef.current.resetZoom();
     }
@@ -532,7 +584,7 @@ function App() {
   // トップURLに戻った時はzoomRangeをリセット
   const handleTitleClick = () => {
     setZoomRange(null);
-    setQueryParams({ metric, period });
+    setQueryParams({ metric, period, granularity });
     navigate('/');
     if (chartRef.current) {
       chartRef.current.resetZoom();
@@ -547,14 +599,20 @@ function App() {
       <div style={{ marginBottom: '10px' }}>期間: {periodText}</div>
       <div style={{ marginBottom: '20px' }}>
         <label>指標: </label>
-        <select value={metric} onChange={e => { setMetric(e.target.value); setQueryParams({ metric: e.target.value, period, ...(zoomRange ? { zoomMin: zoomRange.min, zoomMax: zoomRange.max } : {}) }); }} style={{ marginRight: '20px', fontSize: '1rem' }}>
+        <select value={metric} onChange={e => { setMetric(e.target.value); setQueryParams({ metric: e.target.value, period, granularity, ...(zoomRange ? { zoomMin: zoomRange.min, zoomMax: zoomRange.max } : {}) }); }} style={{ marginRight: '20px', fontSize: '1rem' }}>
           {METRICS.map(opt => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
         <label>期間: </label>
-        <select value={period} onChange={e => { setPeriod(e.target.value); setZoomRange(null); setQueryParams({ metric, period: e.target.value }); }} style={{ fontSize: '1rem' }}>
+        <select value={period} onChange={e => { setPeriod(e.target.value); setZoomRange(null); setQueryParams({ metric, period: e.target.value, granularity }); }} style={{ marginRight: '20px', fontSize: '1rem' }}>
           {PERIODS.map(opt => (
+            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          ))}
+        </select>
+        <label>粒度: </label>
+        <select value={granularity} onChange={e => { setGranularity(e.target.value); setZoomRange(null); setQueryParams({ metric, period, granularity: e.target.value }); }} style={{ fontSize: '1rem' }}>
+          {GRANULARITIES.map(opt => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
         </select>
