@@ -122,6 +122,7 @@ function App() {
   const [summary, setSummary] = useState([]);
   const [showByChecksum, setShowByChecksum] = useState(true);
   const [expandedSamples, setExpandedSamples] = useState({});
+  const [hiddenChecksums, setHiddenChecksums] = useState({});
   const [summarySort, setSummarySort] = useState({ key: 'Query_time_sum', direction: 'desc' });
   const chartRef = useRef();
   const navigate = useNavigate();
@@ -253,9 +254,56 @@ function App() {
   topChecksums.forEach((cs, idx) => {
     checksumColorMap[cs] = COLORS[idx % COLORS.length];
   });
+  const isChecksumVisible = (checksum) => !hiddenChecksums[String(checksum)];
+  const setChecksumVisibility = (checksum, visible) => {
+    const key = String(checksum);
+    setHiddenChecksums((prev) => {
+      if (visible) {
+        if (!prev[key]) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      return { ...prev, [key]: true };
+    });
+  };
+  const toggleChecksumVisibility = (checksum) => {
+    setChecksumVisibility(checksum, !isChecksumVisible(checksum));
+  };
+  const setChecksumsVisibility = (checksums, visible) => {
+    const keys = checksums.map((checksum) => String(checksum));
+    setHiddenChecksums((prev) => {
+      const next = { ...prev };
+      keys.forEach((key) => {
+        if (visible) {
+          delete next[key];
+        } else {
+          next[key] = true;
+        }
+      });
+      return next;
+    });
+  };
+  const setExclusiveChecksumVisibility = (checksum) => {
+    const target = String(checksum);
+    const visibleChecksums = topChecksums.filter((cs) => isChecksumVisible(cs));
+    const isOnlySelectedVisible = visibleChecksums.length === 1 && visibleChecksums[0] === target;
+    if (isOnlySelectedVisible) {
+      setHiddenChecksums({});
+      return;
+    }
+    const nextHidden = {};
+    topChecksums.forEach((cs) => {
+      if (String(cs) !== target) {
+        nextHidden[String(cs)] = true;
+      }
+    });
+    setHiddenChecksums(nextHidden);
+  };
 
   // グラフデータ
   let chartData;
+  let chartDatasetChecksums = [];
   let periodText = '全期間';
   const params = new URLSearchParams(location.search);
   const selectedChecksum = params.get('checksum');
@@ -279,9 +327,11 @@ function App() {
           data: rows.map(row => row[metric]),
           borderColor: color,
           fill: false,
+          hidden: !isChecksumVisible(selectedChecksum),
         },
       ],
     };
+    chartDatasetChecksums = [String(selectedChecksum)];
     if (rows.length > 0) {
       const min = parseDbDateTime(rows[0].ts_min);
       const max = parseDbDateTime(rows[rows.length - 1].ts_min);
@@ -292,7 +342,8 @@ function App() {
   } else if (!showByChecksum) {
     // 合算グラフ
     const tsMap = {};
-    Object.values(filteredGroups).forEach(rows => {
+    Object.entries(filteredGroups).forEach(([checksum, rows]) => {
+      if (!isChecksumVisible(checksum)) return;
       rows.forEach(row => {
         const ts = row.ts_min;
         if (!tsMap[ts]) tsMap[ts] = 0;
@@ -343,9 +394,11 @@ function App() {
           data: rows.map(row => row[metric]),
           borderColor: checksumColorMap[checksum] || COLORS[idx % COLORS.length],
           fill: false,
+          hidden: !isChecksumVisible(checksum),
         };
       }),
     };
+    chartDatasetChecksums = topChecksums.map((checksum) => String(checksum));
     if (chartLabels.length > 0) {
       const min = chartLabels[0];
       const max = chartLabels[chartLabels.length - 1];
@@ -385,24 +438,14 @@ function App() {
       legend: {
         onClick: (e, legendItem, legend) => {
           const index = legendItem.datasetIndex;
-          const ci = legend.chart;
           const ctrlPressed = Boolean(e?.native?.ctrlKey);
+          const checksum = chartDatasetChecksums[index];
+          if (!checksum) return;
           if (ctrlPressed) {
-            const visibleIndexes = ci.data.datasets
-              .map((_, i) => i)
-              .filter((i) => ci.isDatasetVisible(i));
-            const isOnlySelectedVisible = visibleIndexes.length === 1 && visibleIndexes[0] === index;
-            ci.data.datasets.forEach((_, i) => {
-              ci.setDatasetVisibility(i, isOnlySelectedVisible || i === index);
-            });
-            ci.update();
+            setExclusiveChecksumVisibility(checksum);
             return;
           }
-
-          // Chart.js標準のtoggle動作
-          const meta = ci.getDatasetMeta(index);
-          meta.hidden = meta.hidden === null ? !ci.data.datasets[index].hidden : null;
-          ci.update();
+          toggleChecksumVisibility(checksum);
         },
       },
       zoom: {
@@ -439,9 +482,7 @@ function App() {
       if (elements && elements.length > 0) {
         // elements[0].datasetIndex で系列番号取得
         const datasetIndex = elements[0].datasetIndex;
-        // topChecksumsの順番と一致
-        const topChecksums = summary.slice(0, 10).map(row => row.checksum);
-        const checksum = topChecksums[datasetIndex];
+        const checksum = chartDatasetChecksums[datasetIndex];
         if (checksum) {
           navigate(`/?checksum=${checksum}`);
         }
@@ -466,6 +507,9 @@ function App() {
     return av.localeCompare(bv) * direction;
   });
   const displayedSummary = selectedChecksum ? sortedSummary : sortedSummary.slice(0, 10);
+  const displayedChecksums = displayedSummary.map((row) => String(row.checksum));
+  const allDisplayedVisible = displayedChecksums.length > 0 && displayedChecksums.every((checksum) => isChecksumVisible(checksum));
+  const allDisplayedHidden = displayedChecksums.length > 0 && displayedChecksums.every((checksum) => !isChecksumVisible(checksum));
 
   const toggleSummarySort = (key) => {
     setSummarySort((prev) => {
@@ -533,9 +577,32 @@ function App() {
       <Line ref={chartRef} data={chartData} options={options} />
       {/* グラフ下の表 */}
       <h3 style={{marginTop: '40px'}}>クエリサマリー</h3>
+      <div style={{marginBottom: '8px', display: 'flex', gap: '16px'}}>
+        <label>
+          <input
+            type="checkbox"
+            checked={allDisplayedVisible}
+            onChange={() => setChecksumsVisibility(displayedChecksums, true)}
+            disabled={displayedChecksums.length === 0}
+            style={{marginRight: '6px'}}
+          />
+          全表示
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={allDisplayedHidden}
+            onChange={() => setChecksumsVisibility(displayedChecksums, false)}
+            disabled={displayedChecksums.length === 0}
+            style={{marginRight: '6px'}}
+          />
+          全非表示
+        </label>
+      </div>
       <table style={{width: '100%', borderCollapse: 'collapse', marginTop: '10px', tableLayout: 'fixed'}}>
         <thead>
           <tr>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '64px'}}>表示</th>
             <th style={{border: '1px solid #ccc', padding: '4px', width: '80px'}}>
               <button type="button" onClick={() => toggleSummarySort('checksum')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
                 checksum{summarySort.key === 'checksum' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
@@ -583,6 +650,13 @@ function App() {
                 : sampleText;
               return (
                 <tr key={row.checksum}>
+                  <td style={{border: '1px solid #ccc', padding: '4px', textAlign: 'center'}}>
+                    <input
+                      type="checkbox"
+                      checked={isChecksumVisible(row.checksum)}
+                      onChange={() => toggleChecksumVisibility(row.checksum)}
+                    />
+                  </td>
                   <td style={{border: '1px solid #ccc', padding: '4px'}}>
                     <span style={{color: 'blue', textDecoration: 'underline', cursor: 'pointer'}} onClick={() => navigate(`/?checksum=${row.checksum}`)}>
                       {row.checksum?.toString().slice(0,8)}
