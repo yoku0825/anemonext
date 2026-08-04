@@ -384,9 +384,22 @@ function App() {
     plugins: {
       legend: {
         onClick: (e, legendItem, legend) => {
-          // Chart.js標準のtoggle動作
           const index = legendItem.datasetIndex;
           const ci = legend.chart;
+          const ctrlPressed = Boolean(e?.native?.ctrlKey);
+          if (ctrlPressed) {
+            const visibleIndexes = ci.data.datasets
+              .map((_, i) => i)
+              .filter((i) => ci.isDatasetVisible(i));
+            const isOnlySelectedVisible = visibleIndexes.length === 1 && visibleIndexes[0] === index;
+            ci.data.datasets.forEach((_, i) => {
+              ci.setDatasetVisibility(i, isOnlySelectedVisible || i === index);
+            });
+            ci.update();
+            return;
+          }
+
+          // Chart.js標準のtoggle動作
           const meta = ci.getDatasetMeta(index);
           meta.hidden = meta.hidden === null ? !ci.data.datasets[index].hidden : null;
           ci.update();
