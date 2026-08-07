@@ -34,7 +34,7 @@ def get_query_history():
     checksum = request.args.get('checksum')
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor(dictionary=True)
-    sql = 'SELECT checksum, ts_min, ts_max, Query_time_sum, Query_time_max, ts_cnt, Rows_sent_sum, Rows_examined_sum FROM global_query_review_history'
+    sql = 'SELECT checksum, ts_min, ts_max, Query_time_sum, Query_time_max, ts_cnt, Rows_sent_sum, Rows_examined_sum, Rows_examined_sum / Rows_sent_sum AS row_cost_ratio FROM global_query_review_history'
     params = []
     if checksum:
         sql += ' WHERE checksum = %s'
@@ -112,7 +112,7 @@ def get_query_summary():
         where.append('checksum = %s')
         params.append(checksum)
     where_sql = ('WHERE ' + ' AND '.join(where)) if where else ''
-    query = f'SELECT checksum, ANY_VALUE(sample) AS sample, SUM(Query_time_sum) AS Query_time_sum, MAX(Query_time_max) AS Query_time_max, SUM(ts_cnt) AS ts_cnt, SUM(Rows_sent_sum) AS Rows_sent_sum, SUM(Rows_examined_sum) AS Rows_examined_sum FROM global_query_review_history {where_sql} GROUP BY checksum ORDER BY SUM(Query_time_sum) DESC'
+    query = f'SELECT checksum, ANY_VALUE(sample) AS sample, SUM(Query_time_sum) AS Query_time_sum, MAX(Query_time_max) AS Query_time_max, SUM(ts_cnt) AS ts_cnt, SUM(Rows_sent_sum) AS Rows_sent_sum, SUM(Rows_examined_sum) AS Rows_examined_sum, SUM(Rows_examined_sum) / SUM(Rows_sent_sum) AS row_cost_ratio FROM global_query_review_history {where_sql} GROUP BY checksum ORDER BY SUM(Query_time_sum) DESC'
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor(dictionary=True)
     cursor.execute(query, params)

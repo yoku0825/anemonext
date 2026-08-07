@@ -716,6 +716,11 @@ function App() {
                 rows_examined_sum{summarySort.key === 'Rows_examined_sum' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
               </button>
             </th>
+            <th style={{border: '1px solid #ccc', padding: '4px', width: '120px'}}>
+              <button type="button" onClick={() => toggleSummarySort('row_cost_ratio')} style={{border: 'none', background: 'none', cursor: 'pointer', padding: 0}}>
+                row_cost_ratio{summarySort.key === 'row_cost_ratio' ? (summarySort.direction === 'asc' ? ' ▲' : ' ▼') : ''}
+              </button>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -764,6 +769,7 @@ function App() {
                   <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.ts_cnt}</td>
                   <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Rows_sent_sum}</td>
                   <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.Rows_examined_sum}</td>
+                  <td style={{border: '1px solid #ccc', padding: '4px'}}>{row.row_cost_ratio != null ? Number(row.row_cost_ratio).toFixed(3) : ''}</td>
                 </tr>
               );
             })}
